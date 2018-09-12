@@ -104,16 +104,18 @@ func (ru *Rule) alerts(w http.ResponseWriter, r *http.Request) {
 			rules.StateFiring:   "danger",
 		},
 	}
-	ru.executeTemplate(w, "alerts.html", alertStatus)
+	ru.executeTemplate(w, r, "alerts.html", alertStatus)
 }
 
 func (ru *Rule) rules(w http.ResponseWriter, r *http.Request) {
-	ru.executeTemplate(w, "rules.html", ru.ruleManager)
+	ru.executeTemplate(w, r, "rules.html", ru.ruleManager)
 }
 
 func (ru *Rule) Register(r *route.Router) {
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/alerts", http.StatusFound)
+		// see description of PathPrefixStrip at https://docs.traefik.io/basics/#frontends
+		x_forwarded_prefix := r.Header.Get("X-forwarded-prefix")
+		http.Redirect(w, r, fmt.Sprintf("%s/alerts", x_forwarded_prefix), http.StatusFound)
 	})
 
 	instrf := prometheus.InstrumentHandlerFunc
