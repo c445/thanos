@@ -65,12 +65,16 @@ func (bu *BaseUI) getTemplate(name string) (string, error) {
 	return string(baseTmpl) + string(menuTmpl) + string(pageTmpl), nil
 }
 
-func (bu *BaseUI) executeTemplate(w http.ResponseWriter, name string, data interface{}) {
+func (bu *BaseUI) executeTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
 	text, err := bu.getTemplate(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// see description of PathPrefixStrip at https://docs.traefik.io/basics/#frontends
+	x_forwarded_prefix := r.Header.Get("X-forwarded-prefix")
+	bu.tmplFuncs["pathPrefix"] = func() string { return x_forwarded_prefix }
 
 	t, err := template.New("").Funcs(bu.tmplFuncs).Parse(text)
 	if err != nil {

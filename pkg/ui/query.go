@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"html/template"
 	"net/http"
 
@@ -52,7 +53,9 @@ func NewQueryUI(logger log.Logger, flagsMap map[string]string) *Query {
 
 func (q *Query) Register(r *route.Router) {
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/graph", http.StatusFound)
+		// see description of PathPrefixStrip at https://docs.traefik.io/basics/#frontends
+		x_forwarded_prefix := r.Header.Get("X-forwarded-prefix")
+		http.Redirect(w, r, fmt.Sprintf("%s/graph", x_forwarded_prefix), http.StatusFound)
 	})
 
 	instrf := prometheus.InstrumentHandlerFunc
@@ -68,11 +71,11 @@ func (q *Query) Register(r *route.Router) {
 }
 
 func (q *Query) graph(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "graph.html", nil)
+	q.executeTemplate(w, r, "graph.html", nil)
 }
 
 func (q *Query) status(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "status.html", struct {
+	q.executeTemplate(w, r, "status.html", struct {
 		Birth   time.Time
 		CWD     string
 		Version thanosVersion
@@ -91,5 +94,5 @@ func (q *Query) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *Query) flags(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "flags.html", q.flagsMap)
+	q.executeTemplate(w, r, "flags.html", q.flagsMap)
 }
