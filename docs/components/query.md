@@ -24,6 +24,24 @@ $ thanos query \
     --cluster.peers       "thanos-cluster.example.org" \
 ```
 
+## Expose UI on a sub-path
+
+It is possible to expose thanos-query UI and optinally API on a sub-path.
+The sub-path can be defined either statically or dynamically via an HTTP header.
+Static path prefix definition follows the pattern used in Prometheus,
+where `web.route-prefix` option defines HTTP request path prefix (endpoints prefix)
+and `web.external-prefix` prefixes the URLs in HTML code and the HTTP redirect responces.
+
+Additionally, Thanos supports dynamic prefix configuration, which
+[is not yet implemented by Prometheus](https://github.com/prometheus/prometheus/issues/3156).
+Dynamic prefixing simplifies setup when `thanos query` is exposed on a sub-path behind
+a reverse proxy, for example, via a Kubernetes ingress controller
+[Traefik](https://docs.traefik.io/basics/#frontends)
+or [nginx](https://github.com/kubernetes/ingress-nginx/pull/1805).
+If `PathPrefixStrip: /some-path` option or `traefik.frontend.rule.type: PathPrefixStrip`
+Kubernetes Ingress annotation is set, then `Traefik` writes the stripped prefix into X-Forwarded-Prefix header.
+Then, `thanos query --web.prefix-header=X-Forwarded-Prefix` will serve correct HTTP redirects and links prefixed by the stripped path.
+
 ## Deployment
 
 ## Flags
@@ -116,6 +134,29 @@ Flags:
                                  Server name to verify the hostname on the
                                  returned gRPC certificates. See
                                  https://tools.ietf.org/html/rfc4366#section-3.1
+      --web.route-prefix=""      Prefix for API and UI endpoints. This allows
+                                 thanos UI to be served on a sub-path. This
+                                 option is analogous to --web.route-prefix of
+                                 Promethus.
+      --web.external-prefix=""   Static prefix for all HTML links and redirect
+                                 URLs in the UI query web interface. Actual
+                                 endpoints are still served on / or the
+                                 web.route-prefix. This allows thanos UI to be
+                                 served behind a reverse proxy that strips a URL
+                                 sub-path.
+      --web.prefix-header=""     Name of HTTP request header used for dynamic
+                                 prefixing of UI links and redirects. This
+                                 option is ignored if web.external-prefix
+                                 argument is set. Security risk: enable this
+                                 option only if a reverse proxy in front of
+                                 thanos is resetting the header. The
+                                 --web.prefix-header=X-Forwarded-Prefix option
+                                 can be useful, for example, if Thanos UI is
+                                 served via Traefik reverse proxy with
+                                 PathPrefixStrip option enabled, which sends the
+                                 stripped prefix value in X-Forwarded-Prefix
+                                 header. This allows thanos UI to be served on a
+                                 sub-path.
       --query.timeout=2m         Maximum time to process query by query node.
       --query.max-concurrent=20  Maximum number of queries processed
                                  concurrently by query node.
