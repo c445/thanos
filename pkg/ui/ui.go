@@ -6,7 +6,9 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -65,12 +67,14 @@ func (bu *BaseUI) getTemplate(name string) (string, error) {
 	return string(baseTmpl) + string(menuTmpl) + string(pageTmpl), nil
 }
 
-func (bu *BaseUI) executeTemplate(w http.ResponseWriter, name string, data interface{}) {
+func (bu *BaseUI) executeTemplate(w http.ResponseWriter, r *http.Request, name string, prefix string, data interface{}) {
 	text, err := bu.getTemplate(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	bu.tmplFuncs["pathPrefix"] = func() string { return prefix }
 
 	t, err := template.New("").Funcs(bu.tmplFuncs).Parse(text)
 	if err != nil {
@@ -80,4 +84,38 @@ func (bu *BaseUI) executeTemplate(w http.ResponseWriter, name string, data inter
 	if err := t.Execute(w, data); err != nil {
 		level.Warn(bu.logger).Log("msg", "template expansion failed", "err", err)
 	}
+}
+
+// GetWebPrefix sanitizes an external URL path prefix value.
+// A value provided by web.external-prefix flag is preferred over the one supplied through an HTTP header.
+func GetWebPrefix(logger log.Logger, flagsMap map[string]string, r *http.Request) string {
+	prefix := r.Header.Get(flagsMap["web.prefix-header"])
+
+	// Ignore web.prefix-header value if web.external-prefix is defined.
+	if len(flagsMap["web.external-prefix"]) > 0 {
+		prefix = flagsMap["web.external-prefix"]
+	}
+
+	prefix, err := SanitizePrefix(prefix)
+	if err != nil {
+		level.Warn(logger).Log("msg", "Could not parse value of UI external prefix", "prefix", prefix, "err", err)
+	}
+
+	return prefix
+}
+
+// SanitizePrefix makes sure that URL path prefix value is valid.
+// A value is returned without a trailing slash. Thus, empty string is returned for root path.
+func SanitizePrefix(prefix string) (string, error) {
+	u, err := url.Parse(prefix)
+	if err != nil {
+		return "", err
+	}
+	prefix = strings.TrimSuffix(u.Path, "/")
+
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+
+	return prefix, nil
 }
