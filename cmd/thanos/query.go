@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/improbable-eng/thanos/pkg/extprom"
@@ -55,6 +56,10 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string
 	key := cmd.Flag("grpc-client-tls-key", "TLS Key for the client's certificate").Default("").String()
 	caCert := cmd.Flag("grpc-client-tls-ca", "TLS CA Certificates to use to verify gRPC servers").Default("").String()
 	serverName := cmd.Flag("grpc-client-server-name", "Server name to verify the hostname on the returned gRPC certificates. See https://tools.ietf.org/html/rfc4366#section-3.1").Default("").String()
+
+	webRoutePrefix := cmd.Flag("web.route-prefix", "Prefix for API and UI endpoints. This allows thanos UI to be served on a sub-path. This option is analogous to --web.route-prefix of Promethus.").Default("").String()
+	webExternalPrefix := cmd.Flag("web.external-prefix", "Static prefix for all HTML links and redirect URLs in the UI query web interface. Actual endpoints are still served on / or the web.route-prefix. This allows thanos UI to be served behind a reverse proxy that strips a URL sub-path.").Default("").String()
+	webPrefixHeaderName := cmd.Flag("web.prefix-header", "Name of HTTP request header used for dynamic prefixing of UI links and redirects. This option is ignored if web.external-prefix argument is set. Security risk: enable this option only if a reverse proxy in front of thanos is resetting the header. The --web.prefix-header=X-Forwarded-Prefix option can be useful, for example, if Thanos UI is served via Traefik reverse proxy with PathPrefixStrip option enabled, which sends the stripped prefix value in X-Forwarded-Prefix header. This allows thanos UI to be served on a sub-path.").Default("").String()
 
 	queryTimeout := modelDuration(cmd.Flag("query.timeout", "Maximum time to process query by query node.").
 		Default("2m"))
@@ -126,6 +131,9 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string
 			*caCert,
 			*serverName,
 			*httpBindAddr,
+			*webRoutePrefix,
+			*webExternalPrefix,
+			*webPrefixHeaderName,
 			*maxConcurrentQueries,
 			time.Duration(*queryTimeout),
 			*replicaLabel,
@@ -237,6 +245,9 @@ func runQuery(
 	caCert string,
 	serverName string,
 	httpBindAddr string,
+	webRoutePrefix string,
+	webExternalPrefix string,
+	webPrefixHeaderName string,
 	maxConcurrentQueries int,
 	queryTimeout time.Duration,
 	replicaLabel string,
@@ -370,10 +381,29 @@ func runQuery(
 	// Start query API + UI HTTP server.
 	{
 		router := route.New()
-		ui.NewQueryUI(logger, stores, nil).Register(router)
+
+		// redirect from / to /webRoutePrefix
+		if webRoutePrefix != "" {
+			router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, webRoutePrefix, http.StatusFound)
+			})
+		}
+
+		flagsMap := map[string]string{
+			"grpc-address":              grpcBindAddr,
+			"http-address":              httpBindAddr,
+			"grpc-server-tls-cert":      srvCert,
+			"grpc-server-tls-key":       srvKey,
+			"grpc-server-tls-client-ca": srvClientCA,
+			"web.route-prefix":          webRoutePrefix,
+			"web.external-prefix":       webExternalPrefix,
+			"web.prefix-header":         webPrefixHeaderName,
+		}
+
+		ui.NewQueryUI(logger, stores, nil, flagsMap).Register(router.WithPrefix(webRoutePrefix))
 
 		api := v1.NewAPI(logger, reg, engine, queryableCreator, enableAutodownsampling)
-		api.Register(router.WithPrefix("/api/v1"), tracer, logger)
+		api.Register(router.WithPrefix(path.Join(webRoutePrefix, "/api/v1")), tracer, logger)
 
 		router.Get("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
