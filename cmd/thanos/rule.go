@@ -54,7 +54,7 @@ import (
 func registerRule(m map[string]setupFunc, app *kingpin.Application, name string) {
 	cmd := app.Command(name, "ruler evaluating Prometheus rules against given Query nodes, exposing Store API and storing old blocks in bucket")
 
-	grpcBindAddr, httpBindAddr, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
+	grpcBindAddr, httpBindAddr, webRoutePrefix, webExternalPrefix, webPrefixHeaderName, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
 
 	labelStrs := cmd.Flag("label", "Labels to be applied to all generated metrics (repeated).").
 		PlaceHolder("<name>=\"<value>\"").Strings()
@@ -138,6 +138,9 @@ func registerRule(m map[string]setupFunc, app *kingpin.Application, name string)
 			*key,
 			*clientCA,
 			*httpBindAddr,
+			*webRoutePrefix,
+			*webExternalPrefix,
+			*webPrefixHeaderName,
 			time.Duration(*evalInterval),
 			*dataDir,
 			*ruleFiles,
@@ -166,6 +169,9 @@ func runRule(
 	key string,
 	clientCA string,
 	httpBindAddr string,
+	webRoutePrefix string,
+	webExternalPrefix string,
+	webPrefixHeaderName string,
 	evalInterval time.Duration,
 	dataDir string,
 	ruleFiles []string,
@@ -487,11 +493,32 @@ func runRule(
 	// Start UI & metrics HTTP server.
 	{
 		router := route.New()
-		router.Post("/-/reload", func(w http.ResponseWriter, r *http.Request) {
+
+		sanitizedWebRoutePrefix, err := ui.SanitizePrefix(webRoutePrefix)
+		if err != nil {
+			level.Warn(logger).Log("msg", "Could not parse value of web.route-prefix flag", "prefix", webRoutePrefix, "err", err)
+		}
+
+		// redirect from / to /sanitizedWebRoutePrefix
+		if sanitizedWebRoutePrefix != "" {
+			router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, sanitizedWebRoutePrefix, http.StatusFound)
+			})
+		}
+
+		router.WithPrefix(sanitizedWebRoutePrefix).Post("/-/reload", func(w http.ResponseWriter, r *http.Request) {
 			reload <- struct{}{}
 		})
 
-		ui.NewRuleUI(logger, mgr, alertQueryURL.String()).Register(router)
+		flagsMap := map[string]string{
+			"grpc-address":        grpcBindAddr,
+			"http-address":        httpBindAddr,
+			"web.route-prefix":    sanitizedWebRoutePrefix,
+			"web.external-prefix": webExternalPrefix,
+			"web.prefix-header":   webPrefixHeaderName,
+		}
+
+		ui.NewRuleUI(logger, mgr, alertQueryURL.String(), flagsMap).Register(router.WithPrefix(sanitizedWebRoutePrefix))
 
 		mux := http.NewServeMux()
 		registerMetrics(mux, reg)

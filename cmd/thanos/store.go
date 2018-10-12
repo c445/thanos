@@ -25,7 +25,8 @@ import (
 func registerStore(m map[string]setupFunc, app *kingpin.Application, name string) {
 	cmd := app.Command(name, "store node giving access to blocks in a bucket provider. Now supported GCS / S3.")
 
-	grpcBindAddr, httpBindAddr, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
+	// Third, fourth and fifth values are not used in this context and thus ignored.
+	grpcBindAddr, httpBindAddr, _, _, _, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
 
 	dataDir := cmd.Flag("data-dir", "Data directory in which to cache remote blocks.").
 		Default("./data").String()

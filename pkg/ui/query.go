@@ -3,6 +3,7 @@ package ui
 import (
 	"html/template"
 	"net/http"
+	"path"
 
 	"time"
 
@@ -50,13 +51,11 @@ func NewQueryUI(logger log.Logger, flagsMap map[string]string) *Query {
 	}
 }
 
+// Register registers new GET routes for subpages and retirects from / to /graph.
 func (q *Query) Register(r *route.Router) {
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/graph", http.StatusFound)
-	})
-
 	instrf := prometheus.InstrumentHandlerFunc
 
+	r.Get("/", instrf("root", q.root))
 	r.Get("/graph", instrf("graph", q.graph))
 	r.Get("/status", instrf("status", q.status))
 	r.Get("/flags", instrf("flags", q.flags))
@@ -67,12 +66,23 @@ func (q *Query) Register(r *route.Router) {
 	// - what sidecars we see currently
 }
 
+// root redirects / requests to /graph, taking into account the path prefix value
+func (q *Query) root(w http.ResponseWriter, r *http.Request) {
+	prefix := GetWebPrefix(q.logger, q.flagsMap, r)
+
+	http.Redirect(w, r, path.Join(prefix, "/graph"), http.StatusFound)
+}
+
 func (q *Query) graph(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "graph.html", nil)
+	prefix := GetWebPrefix(q.logger, q.flagsMap, r)
+
+	q.executeTemplate(w, r, "graph.html", prefix, nil)
 }
 
 func (q *Query) status(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "status.html", struct {
+	prefix := GetWebPrefix(q.logger, q.flagsMap, r)
+
+	q.executeTemplate(w, r, "status.html", prefix, struct {
 		Birth   time.Time
 		CWD     string
 		Version thanosVersion
@@ -91,5 +101,7 @@ func (q *Query) status(w http.ResponseWriter, r *http.Request) {
 }
 
 func (q *Query) flags(w http.ResponseWriter, r *http.Request) {
-	q.executeTemplate(w, "flags.html", q.flagsMap)
+	prefix := GetWebPrefix(q.logger, q.flagsMap, r)
+
+	q.executeTemplate(w, r, "flags.html", prefix, q.flagsMap)
 }

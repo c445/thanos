@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -42,7 +43,7 @@ import (
 func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string) {
 	cmd := app.Command(name, "query node exposing PromQL enabled Query API with data retrieved from multiple store nodes")
 
-	grpcBindAddr, httpBindAddr, srvCert, srvKey, srvClientCA, newPeerFn := regCommonServerFlags(cmd)
+	grpcBindAddr, httpBindAddr, webRoutePrefix, webExternalPrefix, webPrefixHeaderName, srvCert, srvKey, srvClientCA, newPeerFn := regCommonServerFlags(cmd)
 
 	httpAdvertiseAddr := cmd.Flag("http-advertise-address", "Explicit (external) host:port address to advertise for HTTP QueryAPI in gossip cluster. If empty, 'http-address' will be used.").
 		String()
@@ -120,6 +121,9 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string
 			*caCert,
 			*serverName,
 			*httpBindAddr,
+			*webRoutePrefix,
+			*webExternalPrefix,
+			*webPrefixHeaderName,
 			*maxConcurrentQueries,
 			time.Duration(*queryTimeout),
 			*replicaLabel,
@@ -230,6 +234,9 @@ func runQuery(
 	caCert string,
 	serverName string,
 	httpBindAddr string,
+	webRoutePrefix string,
+	webExternalPrefix string,
+	webPrefixHeaderName string,
 	maxConcurrentQueries int,
 	queryTimeout time.Duration,
 	replicaLabel string,
@@ -361,10 +368,34 @@ func runQuery(
 	// Start query API + UI HTTP server.
 	{
 		router := route.New()
-		ui.NewQueryUI(logger, nil).Register(router)
+
+		sanitizedWebRoutePrefix, err := ui.SanitizePrefix(webRoutePrefix)
+		if err != nil {
+			level.Warn(logger).Log("msg", "Could not parse value of web.route-prefix flag", "prefix", webRoutePrefix, "err", err)
+		}
+
+		// redirect from / to /sanitizedWebRoutePrefix
+		if sanitizedWebRoutePrefix != "" {
+			router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, sanitizedWebRoutePrefix, http.StatusFound)
+			})
+		}
+
+		flagsMap := map[string]string{
+			"grpc-address":              grpcBindAddr,
+			"http-address":              httpBindAddr,
+			"grpc-server-tls-cert":      srvCert,
+			"grpc-server-tls-key":       srvKey,
+			"grpc-server-tls-client-ca": srvClientCA,
+			"web.route-prefix":          sanitizedWebRoutePrefix,
+			"web.external-prefix":       webExternalPrefix,
+			"web.prefix-header":         webPrefixHeaderName,
+		}
+
+		ui.NewQueryUI(logger, flagsMap).Register(router.WithPrefix(sanitizedWebRoutePrefix))
 
 		api := v1.NewAPI(logger, reg, engine, queryableCreator, enableAutodownsampling)
-		api.Register(router.WithPrefix("/api/v1"), tracer, logger)
+		api.Register(router.WithPrefix(path.Join(sanitizedWebRoutePrefix, "/api/v1")), tracer, logger)
 
 		router.Get("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
