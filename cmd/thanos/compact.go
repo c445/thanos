@@ -400,7 +400,7 @@ func runCompact(
 			iterCancel()
 
 			// For /global state make sure to fetch periodically.
-			return runutil.Repeat(time.Minute, ctx.Done(), func() error {
+			return runutil.Repeat(conf.waitSyncBlockInterval, ctx.Done(), func() error {
 				return runutil.RetryWithLog(logger, time.Minute, ctx.Done(), func() error {
 					iterCtx, iterCancel := context.WithTimeout(ctx, conf.waitInterval)
 					defer iterCancel()
@@ -433,6 +433,8 @@ type compactConfig struct {
 	retentionRaw, retentionFiveMin, retentionOneHr model.Duration
 	wait                                           bool
 	waitInterval                                   time.Duration
+	waitSyncBlockInterval                          time.Duration
+	generateMissingIndexCacheFiles                 bool
 	disableDownsampling                            bool
 	blockSyncConcurrency                           int
 	compactionConcurrency                          int
@@ -475,6 +477,8 @@ func (cc *compactConfig) registerFlag(cmd *kingpin.CmdClause) *compactConfig {
 		Short('w').BoolVar(&cc.wait)
 	cmd.Flag("wait-interval", "Wait interval between consecutive compaction runs and bucket refreshes. Only works when --wait flag specified.").
 		Default("5m").DurationVar(&cc.waitInterval)
+	cmd.Flag("wait-sync-block-interval", "Repeat interval for syncing the blocks between local and remote view.").
+		Default("1m").DurationVar(&cc.waitSyncBlockInterval)
 
 	cmd.Flag("downsampling.disable", "Disables downsampling. This is not recommended "+
 		"as querying long time ranges without non-downsampled data is not efficient and useful e.g it is not possible to render all samples for a human eye anyway").
