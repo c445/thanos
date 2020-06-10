@@ -417,7 +417,7 @@ func runCompact(
 			iterCancel()
 
 			// For /global state make sure to fetch periodically.
-			return runutil.Repeat(time.Minute, ctx.Done(), func() error {
+			return runutil.Repeat(conf.waitSyncBlockInterval, ctx.Done(), func() error {
 				return runutil.RetryWithLog(logger, time.Minute, ctx.Done(), func() error {
 					iterCtx, iterCancel := context.WithTimeout(ctx, conf.waitInterval)
 					defer iterCancel()
@@ -540,6 +540,7 @@ type compactConfig struct {
 	retentionRaw, retentionFiveMin, retentionOneHr model.Duration
 	wait                                           bool
 	waitInterval                                   time.Duration
+	waitSyncBlockInterval                          time.Duration
 	generateMissingIndexCacheFiles                 bool
 	disableDownsampling                            bool
 	blockSyncConcurrency                           int
@@ -583,6 +584,8 @@ func (cc *compactConfig) registerFlag(cmd *kingpin.CmdClause) *compactConfig {
 		Short('w').BoolVar(&cc.wait)
 	cmd.Flag("wait-interval", "Wait interval between consecutive compaction runs and bucket refreshes. Only works when --wait flag specified.").
 		Default("5m").DurationVar(&cc.waitInterval)
+	cmd.Flag("wait-sync-block-interval", "Repeat interval for syncing the blocks between local and remote view.").
+		Default("1m").DurationVar(&cc.waitSyncBlockInterval)
 
 	cmd.Flag("index.generate-missing-cache-file", "DEPRECATED flag. Will be removed in next release. If enabled, on startup compactor runs an on-off job that scans all the blocks to find all blocks with missing index cache file. It generates those if needed and upload.").
 		Hidden().Default("false").BoolVar(&cc.generateMissingIndexCacheFiles)
