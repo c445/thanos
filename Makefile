@@ -7,14 +7,14 @@ DOCKER_CI_TAG     ?= test
 
 SHA=''
 arch = $(shell uname -m)
-# Run `DOCKER_CLI_EXPERIMENTAL=enabled docker manifest inspect quay.io/prometheus/busybox:latest` to get SHA
+# Run `DOCKER_CLI_EXPERIMENTAL=enabled docker manifest inspect alpine:latest` to get SHA
 # Update at 2020.07.06
 ifeq ($(arch), x86_64)
     # amd64
-    SHA="248b7ec76e03e6b4fbb796fc3cdd2f91dad45546a6d7dee61c322475e0e8a08f"
+    SHA="d7342993700f8cd7aba8496c2d0e57be0666e80b4c441925fc6f9361fa81d10e"
 else ifeq ($(arch), armv8)
     # arm64
-    SHA="69508e8fdc516eacbacc0379c03c971e3043706cc8211e6bddb35d903edc3628"
+    SHA="fbb820c07896f5c2516167e7146d9938fc82d4b6b1db167defa5b0a7162e4480"
 else
     echo >&2 "only support amd64 or arm64 arch" && exit 1
 endif
