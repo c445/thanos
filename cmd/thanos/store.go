@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -77,6 +78,9 @@ func registerStore(app *extkingpin.App) {
 
 	syncInterval := cmd.Flag("sync-block-duration", "Repeat interval for syncing the blocks between local and remote view.").
 		Default("3m").Duration()
+
+	syncRandomOffset := cmd.Flag("sync-block-random-offset", "Offset will be added to the given sync-block-duration. If multiple values a given a random one is chosen. Repeated flag.").
+		Hidden().Default("0m").DurationList()
 
 	blockSyncConcurrency := cmd.Flag("block-sync-concurrency", "Number of goroutines to use when constructing index-cache.json blocks from object storage.").
 		Default("20").Int()
@@ -162,6 +166,7 @@ func registerStore(app *extkingpin.App) {
 			component.Store,
 			debugLogging,
 			*syncInterval,
+			*syncRandomOffset,
 			*blockSyncConcurrency,
 			*blockMetaFetchConcurrency,
 			&store.FilterConfig{
@@ -205,6 +210,7 @@ func runStore(
 	component component.Component,
 	verbose bool,
 	syncInterval time.Duration,
+	syncRandomOffset []time.Duration,
 	blockSyncConcurrency int,
 	metaFetchConcurrency int,
 	filterConf *store.FilterConfig,
@@ -354,6 +360,16 @@ func runStore(
 
 	// bucketStoreReady signals when bucket store is ready.
 	bucketStoreReady := make(chan struct{})
+
+	pickRandomOffset := func(offsets []time.Duration) time.Duration {
+		length := len(offsets)
+		if length == 0 {
+			return 0
+		}
+		rand.Seed(time.Now().UnixNano())
+		return offsets[rand.Intn(length)]
+	}
+
 	{
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -368,7 +384,13 @@ func runStore(
 			level.Info(logger).Log("msg", "bucket store ready", "init_duration", time.Since(begin).String())
 			close(bucketStoreReady)
 
-			err := runutil.Repeat(syncInterval, ctx.Done(), func() error {
+			interval := syncInterval
+			offset := pickRandomOffset(syncRandomOffset)
+			if offset != 0 {
+				interval = syncInterval + offset
+				level.Info(logger).Log("msg", "using block sync interval with randomly chosen offset", "given_interval", syncInterval, "chosen_offset", offset, "final_interval", interval)
+			}
+			err := runutil.Repeat(interval, ctx.Done(), func() error {
 				if err := bs.SyncBlocks(ctx); err != nil {
 					level.Warn(logger).Log("msg", "syncing blocks failed", "err", err)
 				}
