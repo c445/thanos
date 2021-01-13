@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +150,16 @@ func parseConfig(conf []byte) (Config, error) {
 	}
 
 	return config, nil
+}
+
+var once sync.Once
+
+func SetMaxRetriesForClientOnce(max int) {
+	once.Do(func(max int) func() {
+		return func() {
+			minio.MaxRetry = max
+		}
+	}(max))
 }
 
 // NewBucket returns a new Bucket using the provided s3 config values.

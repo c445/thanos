@@ -63,7 +63,7 @@ func NewBucket(logger log.Logger, confContentYaml []byte, reg prometheus.Registe
 		bucket, err = gcs.NewBucket(context.Background(), logger, config, component)
 	case string(S3):
 		// 125 retries will cause the underlying s3 client to retry for max. ~1h.
-		s3.SetMaxRetriesForClient(125)
+		s3.SetMaxRetriesForClientOnce(125)
 		// Use slowed down http transport for compact only
 		if component == thanosComponent.Compact.String() {
 			bucket, err = s3.NewBucketWithCustomRoundTrip(logger, config, func(transport http.RoundTripper, req *http.Request) (*http.Response, error) {
