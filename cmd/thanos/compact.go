@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"path"
 	"strconv"
@@ -401,6 +402,21 @@ func runCompact(
 		return cleanPartialMarked()
 	}
 
+	pickRandomOffset := func(offsets []time.Duration) time.Duration {
+		length := len(offsets)
+		if length == 0 {
+			return 0
+		}
+		rand.Seed(time.Now().UnixNano())
+		return offsets[rand.Intn(length)]
+	}
+
+	interval := conf.waitInterval
+	offset := pickRandomOffset(conf.waitRandomOffset)
+	if conf.wait && conf.waitInterval != 0 && offset != 0 {
+		interval = conf.waitInterval + offset
+		level.Info(logger).Log("msg", "using wait interval with randomly chosen offset", "given_interval", conf.waitInterval, "chosen_offset", offset, "final_interval", interval)
+	}
 	g.Add(func() error {
 		defer runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
 
@@ -409,7 +425,7 @@ func runCompact(
 		}
 
 		// --wait=true is specified.
-		return runutil.Repeat(conf.waitInterval, ctx.Done(), func() error {
+		return runutil.Repeat(interval, ctx.Done(), func() error {
 			err := compactMainFn()
 			if err == nil {
 				iterations.Inc()
@@ -479,15 +495,21 @@ func runCompact(
 			})
 		}
 
+		blockSyncInterval := conf.blockViewerSyncBlockInterval
+		blockSyncOffset := pickRandomOffset(conf.blockViewerSyncRandomOffset)
+		if blockSyncOffset != 0 {
+			blockSyncInterval = conf.blockViewerSyncBlockInterval + blockSyncOffset
+			level.Info(logger).Log("msg", "using global block sync interval with randomly chosen offset", "given_interval", conf.blockViewerSyncBlockInterval, "chosen_offset", blockSyncOffset, "final_interval", blockSyncInterval)
+		}
 		g.Add(func() error {
-			iterCtx, iterCancel := context.WithTimeout(ctx, conf.waitInterval)
+			iterCtx, iterCancel := context.WithTimeout(ctx, blockSyncInterval)
 			_, _, _ = f.Fetch(iterCtx)
 			iterCancel()
 
 			// For /global state make sure to fetch periodically.
-			return runutil.Repeat(conf.blockViewerSyncBlockInterval, ctx.Done(), func() error {
+			return runutil.Repeat(blockSyncInterval, ctx.Done(), func() error {
 				return runutil.RetryWithLog(logger, time.Minute, ctx.Done(), func() error {
-					iterCtx, iterCancel := context.WithTimeout(ctx, conf.waitInterval)
+					iterCtx, iterCancel := context.WithTimeout(ctx, blockSyncInterval)
 					defer iterCancel()
 
 					_, _, err := f.Fetch(iterCtx)
@@ -518,9 +540,11 @@ type compactConfig struct {
 	retentionRaw, retentionFiveMin, retentionOneHr model.Duration
 	wait                                           bool
 	waitInterval                                   time.Duration
+	waitRandomOffset                               []time.Duration
 	disableDownsampling                            bool
 	blockSyncConcurrency                           int
 	blockViewerSyncBlockInterval                   time.Duration
+	blockViewerSyncRandomOffset                    []time.Duration
 	cleanupBlocksInterval                          time.Duration
 	compactionConcurrency                          int
 	deleteDelay                                    model.Duration
@@ -563,6 +587,8 @@ func (cc *compactConfig) registerFlag(cmd extkingpin.FlagClause) {
 		Short('w').BoolVar(&cc.wait)
 	cmd.Flag("wait-interval", "Wait interval between consecutive compaction runs and bucket refreshes. Only works when --wait flag specified.").
 		Default("5m").DurationVar(&cc.waitInterval)
+	cmd.Flag("wait-random-offset", "Offset will be added to the given wait-interval. If multiple values a given a random one is chosen. Repeated flag.").
+		Default("0m").DurationListVar(&cc.waitRandomOffset)
 
 	cmd.Flag("downsampling.disable", "Disables downsampling. This is not recommended "+
 		"as querying long time ranges without non-downsampled data is not efficient and useful e.g it is not possible to render all samples for a human eye anyway").
@@ -572,6 +598,8 @@ func (cc *compactConfig) registerFlag(cmd extkingpin.FlagClause) {
 		Default("20").IntVar(&cc.blockSyncConcurrency)
 	cmd.Flag("block-viewer.global.sync-block-interval", "Repeat interval for syncing the blocks between local and remote view for /global Block Viewer UI.").
 		Default("1m").DurationVar(&cc.blockViewerSyncBlockInterval)
+	cmd.Flag("block-viewer.global.sync-block-random-offset", "Offset will be added to the given sync-block-interval. If multiple values a given a random one is chosen. Repeated flag.").
+		Default("0m").DurationListVar(&cc.blockViewerSyncRandomOffset)
 	cmd.Flag("compact.cleanup-interval", "How often we should clean up partially uploaded blocks and blocks with deletion mark in the background when --wait has been enabled. Setting it to \"0s\" disables it - the cleaning will only happen at the end of an iteration.").
 		Default("5m").DurationVar(&cc.cleanupBlocksInterval)
 
