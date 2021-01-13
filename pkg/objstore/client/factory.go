@@ -6,12 +6,15 @@ package client
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	thanosComponent "github.com/thanos-io/thanos/pkg/component"
 	"github.com/thanos-io/thanos/pkg/objstore"
 	"github.com/thanos-io/thanos/pkg/objstore/azure"
 	"github.com/thanos-io/thanos/pkg/objstore/cos"
@@ -59,7 +62,17 @@ func NewBucket(logger log.Logger, confContentYaml []byte, reg prometheus.Registe
 	case string(GCS):
 		bucket, err = gcs.NewBucket(context.Background(), logger, config, component)
 	case string(S3):
-		bucket, err = s3.NewBucket(logger, config, component)
+		// 125 retries will cause the underlying s3 client to retry for max. ~1h.
+		s3.SetMaxRetriesForClient(125)
+		// Use slowed down http transport for compact only
+		if component == thanosComponent.Compact.String() {
+			bucket, err = s3.NewBucketWithCustomRoundTrip(logger, config, func(transport http.RoundTripper, req *http.Request) (*http.Response, error) {
+				time.Sleep(100 * time.Millisecond)
+				return transport.RoundTrip(req)
+			}, component)
+		} else {
+			bucket, err = s3.NewBucket(logger, config, component)
+		}
 	case string(AZURE):
 		bucket, err = azure.NewBucket(logger, config, component)
 	case string(SWIFT):

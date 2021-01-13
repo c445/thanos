@@ -161,6 +161,34 @@ func NewBucket(logger log.Logger, conf []byte, component string) (*Bucket, error
 	return NewBucketWithConfig(logger, config, component)
 }
 
+type RoundTripFunc func(rt http.RoundTripper, req *http.Request) (*http.Response, error)
+
+type customRoundTripper struct {
+	transport http.RoundTripper
+	rtFunc    RoundTripFunc
+}
+
+func (r customRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return r.rtFunc(r.transport, req)
+}
+
+func NewCustomTransport(rt http.RoundTripper, fn RoundTripFunc) http.RoundTripper {
+	return &customRoundTripper{
+		transport: rt,
+		rtFunc:    fn,
+	}
+}
+
+func NewBucketWithCustomRoundTrip(logger log.Logger, conf []byte, rtFunc RoundTripFunc, component string) (*Bucket, error) {
+	config, err := parseConfig(conf)
+	if err != nil {
+		return nil, err
+	}
+
+	config.HTTPConfig.Transport = NewCustomTransport(DefaultTransport(config), rtFunc)
+	return NewBucketWithConfig(logger, config, component)
+}
+
 // NewBucketWithConfig returns a new Bucket using the provided s3 config values.
 func NewBucketWithConfig(logger log.Logger, config Config, component string) (*Bucket, error) {
 	var chain []credentials.Provider
