@@ -59,6 +59,8 @@ func NewBucket(logger log.Logger, confContentYaml []byte, reg prometheus.Registe
 	case string(GCS):
 		bucket, err = gcs.NewBucket(context.Background(), logger, config, component)
 	case string(S3):
+		// 125 retries will cause the underlying s3 client to retry for max. ~1h.
+		s3.SetMaxRetriesForClientOnce(125)
 		bucket, err = s3.NewBucket(logger, config, component)
 	case string(AZURE):
 		bucket, err = azure.NewBucket(logger, config, component)
