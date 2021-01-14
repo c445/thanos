@@ -274,7 +274,7 @@ func runStore(
 	}
 
 	ignoreDeletionMarkFilter := block.NewIgnoreDeletionMarkFilter(logger, bkt, ignoreDeletionMarksDelay)
-	metaFetcher, err := block.NewMetaFetcher(logger, fetcherConcurrency, bkt, dataDir, extprom.WrapRegistererWithPrefix("thanos_", reg),
+	metaFetcher, err := block.NewMetaFetcher(logger, blockSyncConcurrency, bkt, dataDir, extprom.WrapRegistererWithPrefix("thanos_", reg),
 		[]block.MetadataFilter{
 			block.NewTimePartitionMetaFilter(filterConf.MinTime, filterConf.MaxTime),
 			block.NewLabelShardedMetaFilter(relabelConfig),
