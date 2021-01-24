@@ -4,8 +4,17 @@
 package s3
 
 import (
+	"bytes"
+	"context"
+	"io/ioutil"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	"github.com/minio/minio-go/v7"
 
 	"github.com/thanos-io/thanos/pkg/testutil"
 )
@@ -254,5 +263,142 @@ list_objects_version: "abcd"`)
 
 	if cfg2.ListObjectsVersion != "abcd" {
 		t.Errorf("parsing of list_objects_version failed: got %v, expected %v", cfg.ListObjectsVersion, "abcd")
+	}
+}
+
+type roundTripFunc func(rt *roundTripper, req *http.Request) (*http.Response, error)
+
+type roundTripper struct {
+	mtx     sync.RWMutex
+	retries int
+	rtFunc  roundTripFunc
+}
+
+func (r *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return r.rtFunc(r, req)
+}
+
+func (r *roundTripper) IncrRetries() {
+	r.mtx.Lock()
+	r.retries++
+	r.mtx.Unlock()
+}
+
+func (r *roundTripper) Retries() int {
+	r.mtx.RLock()
+	defer r.mtx.RUnlock()
+
+	return r.retries
+}
+
+type credProvider struct {
+	creds   credentials.Value
+	expired bool
+	err     error
+}
+
+func (s *credProvider) Retrieve() (credentials.Value, error) {
+	s.expired = false
+	return s.creds, s.err
+}
+func (s *credProvider) IsExpired() bool {
+	return s.expired
+}
+
+func newTestClient(rt http.RoundTripper) *minio.Client {
+	c, _ := minio.New("test.com", &minio.Options{
+		Creds: credentials.New(&credProvider{
+			creds: credentials.Value{
+				AccessKeyID:     "ABC",
+				SecretAccessKey: "DEF",
+				SessionToken:    "",
+			},
+			expired: false,
+		}),
+		Transport: rt,
+	})
+
+	return c
+}
+
+func Test_tryUpload(t *testing.T) {
+	type args struct {
+		retries      int
+		sleep        time.Duration
+		successAfter int
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    int
+		wantErr bool
+	}{
+		{
+			name: "Immediate success",
+			args: args{
+				retries:      0,
+				sleep:        0,
+				successAfter: 0,
+			},
+			want: -1,
+		},
+		{
+			name: "Success after 3 retries",
+			args: args{
+				retries:      3,
+				sleep:        0,
+				successAfter: 3,
+			},
+			want: 0,
+		},
+		{
+			name: "Immediate Success",
+			args: args{
+				retries:      3,
+				sleep:        0,
+				successAfter: 0,
+			},
+			want: 2,
+		},
+		{
+			name: "Error of exhausted retries",
+			args: args{
+				retries:      3,
+				sleep:        0,
+				successAfter: 5,
+			},
+			want:    -1,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := roundTripper{
+				rtFunc: func(rt *roundTripper, req *http.Request) (*http.Response, error) {
+					rt.IncrRetries()
+					if rt.Retries() < tt.args.successAfter {
+						return &http.Response{
+							StatusCode: http.StatusServiceUnavailable,
+							Status:     "SlowDown",
+							Body:       ioutil.NopCloser(bytes.NewBufferString(`ERROR`)),
+							Header:     make(http.Header),
+						}, nil
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       ioutil.NopCloser(bytes.NewBufferString(`<foo></foo>`)),
+						Header:     make(http.Header),
+					}, nil
+				},
+			}
+			got, err := tryUpload(context.TODO(), newTestClient(&rt), "foo", "bar", ioutil.NopCloser(bytes.NewBufferString(`foo`)), 0, minio.PutObjectOptions{}, tt.args.retries, tt.args.sleep)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("tryUpload() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("tryUpload() got = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

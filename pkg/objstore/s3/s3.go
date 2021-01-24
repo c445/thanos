@@ -44,6 +44,12 @@ const (
 
 	// SSES3 is the name of the SSE-S3 method for objstore encryption.
 	SSES3 = "SSE-S3"
+
+	// UploadRetries is the number of retries before giving up on upload operations.
+	UploadRetries = 360
+
+	// UploadSleep is the duration to wait before subsequent upload attempts.
+	UploadSleep = 10 * time.Second
 )
 
 var DefaultConfig = Config{
@@ -435,22 +441,37 @@ func (b *Bucket) Upload(ctx context.Context, name string, r io.Reader) error {
 	if size < int64(partSize) {
 		partSize = 0
 	}
-	if _, err := b.client.PutObject(
-		ctx,
-		b.name,
-		name,
-		r,
-		size,
-		minio.PutObjectOptions{
-			PartSize:             partSize,
+
+	if _, err := tryUpload(ctx, b.client, b.name, name, r, size,
+		minio.PutObjectOptions{PartSize: partSize,
 			ServerSideEncryption: b.sse,
 			UserMetadata:         b.putUserMetadata,
-		},
-	); err != nil {
+		}, UploadRetries, UploadSleep); err != nil {
 		return errors.Wrap(err, "upload s3 object")
 	}
 
 	return nil
+}
+
+func tryUpload(ctx context.Context, c *minio.Client, bucketName, objectName string, reader io.Reader, objectSize int64, opts minio.PutObjectOptions, retries int, sleep time.Duration) (int, error) {
+	_, err := c.PutObject(
+		ctx,
+		bucketName,
+		objectName,
+		reader,
+		objectSize,
+		opts,
+	)
+	retries--
+	if err != nil {
+		if retries < 0 {
+			return retries, err
+		}
+		time.Sleep(sleep)
+		return tryUpload(ctx, c, bucketName, objectName, reader, objectSize, opts, retries, sleep)
+	}
+
+	return retries, nil
 }
 
 // Attributes returns information about the specified object.
