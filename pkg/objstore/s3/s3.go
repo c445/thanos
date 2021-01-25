@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -44,6 +45,23 @@ const (
 
 	// SSES3 is the name of the SSE-S3 method for objstore encryption.
 	SSES3 = "SSE-S3"
+
+	// DefaultRetries is the number of retries before giving up on upload operations.
+	DefaultRetries = 125
+
+	// MaxJitter will randomize over the full exponential backoff time
+	MaxJitter = 1.0
+
+	// NoJitter disables the use of jitter for randomizing the exponential backoff time
+	NoJitter = 0.0
+
+	// DefaultRetryUnit - default unit multiplicative per retry.
+	// defaults to 1 second.
+	DefaultRetryUnit = time.Second
+
+	// DefaultRetryCap - Each retry attempt never waits no longer than
+	// this maximum time duration.
+	DefaultRetryCap = time.Second * 30
 )
 
 var DefaultConfig = Config{
@@ -422,7 +440,7 @@ func (b *Bucket) Exists(ctx context.Context, name string) (bool, error) {
 }
 
 // Upload the contents of the reader as an object into the bucket.
-func (b *Bucket) Upload(ctx context.Context, name string, r io.Reader) error {
+func (b *Bucket) Upload(ctx context.Context, name string, r io.Reader) (err error) {
 	// TODO(https://github.com/thanos-io/thanos/issues/678): Remove guessing length when minio provider will support multipart upload without this.
 	size, err := objstore.TryToGetSize(r)
 	if err != nil {
@@ -435,22 +453,86 @@ func (b *Bucket) Upload(ctx context.Context, name string, r io.Reader) error {
 	if size < int64(partSize) {
 		partSize = 0
 	}
-	if _, err := b.client.PutObject(
-		ctx,
-		b.name,
-		name,
-		r,
-		size,
-		minio.PutObjectOptions{
-			PartSize:             partSize,
-			ServerSideEncryption: b.sse,
-			UserMetadata:         b.putUserMetadata,
-		},
-	); err != nil {
+
+	retryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Let's try multiple times to upload the object to s3.
+	for attempt := range newRetryTimer(retryCtx, DefaultRetries, DefaultRetryUnit, DefaultRetryCap, MaxJitter) {
+		if _, err = b.client.PutObject(
+			ctx,
+			b.name,
+			name,
+			r,
+			size,
+			minio.PutObjectOptions{
+				PartSize:             partSize,
+				ServerSideEncryption: b.sse,
+				UserMetadata:         b.putUserMetadata,
+			},
+		); err != nil {
+			level.Info(b.logger).Log("msg", "upload to bucket failed; trying again", "bucket_name", b.name, "object_name", name, "attempt", attempt, "err", err)
+			// try again
+			continue
+		}
+		break
+	}
+
+	if e := retryCtx.Err(); e != nil {
+		err = errors.Wrap(err, e.Error())
+	}
+
+	if err != nil {
 		return errors.Wrap(err, "upload s3 object")
 	}
 
 	return nil
+}
+
+// newRetryTimer is copied from https://github.com/minio/minio-go/blob/v7.0.2/retry.go#L45 and slightly adjusted.
+func newRetryTimer(ctx context.Context, maxRetry int, unit time.Duration, cap time.Duration, jitter float64) <-chan int {
+	attemptCh := make(chan int)
+
+	// computes the exponential backoff duration according to
+	// https://www.awsarchitectureblog.com/2015/03/backoff.html
+	exponentialBackoffWait := func(attempt int) time.Duration {
+		// normalize jitter to the range [0, 1.0]
+		if jitter < NoJitter {
+			jitter = NoJitter
+		}
+		if jitter > MaxJitter {
+			jitter = MaxJitter
+		}
+
+		//sleep = random_between(0, min(cap, base * 2 ** attempt)).
+		sleep := unit * time.Duration(1<<uint(attempt))
+		if sleep > cap {
+			sleep = cap
+		}
+		if jitter != NoJitter {
+			rand.Seed(time.Now().UnixNano())
+			sleep -= time.Duration(rand.Float64() * float64(sleep) * jitter)
+		}
+		return sleep
+	}
+
+	go func() {
+		defer close(attemptCh)
+		for i := 0; i < maxRetry; i++ {
+			select {
+			case attemptCh <- i + 1:
+			case <-ctx.Done():
+				return
+			}
+
+			select {
+			case <-time.After(exponentialBackoffWait(i)):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return attemptCh
 }
 
 // Attributes returns information about the specified object.
