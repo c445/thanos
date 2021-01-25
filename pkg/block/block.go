@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
@@ -41,7 +42,21 @@ const (
 
 	// DebugMetas is a directory for debug meta files that happen in the past. Useful for debugging.
 	DebugMetas = "debug/metas"
+
+	// MaxJitter will randomize over the full exponential backoff time
+	MaxJitter = 1.0
+	// NoJitter disables the use of jitter for randomizing the exponential backoff time
+	NoJitter = 0.0
+	// DefaultRetryUnit - default unit multiplicative per retry.
+	// defaults to 1 second.
+	DefaultRetryUnit = time.Second
+	// DefaultRetryCap - Each retry attempt never waits no longer than
+	// this maximum time duration.
+	DefaultRetryCap = time.Second * 30
 )
+
+// MaxRetries is the maximum number of retries before giving up on bucket operations.
+var MaxRetries = 10
 
 // Download downloads directory that is mean to be block directory.
 func Download(ctx context.Context, logger log.Logger, bucket objstore.Bucket, id ulid.ULID, dst string) error {
@@ -68,7 +83,7 @@ func Download(ctx context.Context, logger log.Logger, bucket objstore.Bucket, id
 // It also verifies basic features of Thanos block.
 // TODO(bplotka): Ensure bucket operations have reasonable backoff retries.
 // NOTE: Upload updates `meta.Thanos.File` section.
-func Upload(ctx context.Context, logger log.Logger, bkt objstore.Bucket, bdir string) error {
+func Upload(ctx context.Context, logger log.Logger, bkt objstore.Bucket, bdir string) (err error) {
 	df, err := os.Stat(bdir)
 	if err != nil {
 		return err
@@ -103,25 +118,71 @@ func Upload(ctx context.Context, logger log.Logger, bkt objstore.Bucket, bdir st
 		return errors.Wrap(err, "encode meta file")
 	}
 
-	if err := bkt.Upload(ctx, path.Join(DebugMetas, fmt.Sprintf("%s.json", id)), strings.NewReader(metaEncoded.String())); err != nil {
-		return cleanUp(logger, bkt, id, errors.Wrap(err, "upload debug meta file"))
+	retryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Let's try multiple times to upload the objects to s3.
+	name := fmt.Sprintf("%s.json", id)
+	for attempt := range newRetryTimer(retryCtx, MaxRetries, DefaultRetryUnit, DefaultRetryCap, MaxJitter) {
+		if err = bkt.Upload(ctx, path.Join(DebugMetas, name), strings.NewReader(metaEncoded.String())); err != nil {
+			level.Info(logger).Log("msg", "upload of debug meta file to bucket failed; trying again", "name", name, "attempt", attempt, "err", err)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		err = cleanUp(logger, bkt, id, errors.Wrap(err, "upload debug meta file"))
 	}
 
-	if err := objstore.UploadDir(ctx, logger, bkt, path.Join(bdir, ChunksDirname), path.Join(id.String(), ChunksDirname)); err != nil {
-		return cleanUp(logger, bkt, id, errors.Wrap(err, "upload chunks"))
+	src := path.Join(bdir, ChunksDirname)
+	dst := path.Join(id.String(), ChunksDirname)
+	for attempt := range newRetryTimer(retryCtx, MaxRetries, DefaultRetryUnit, DefaultRetryCap, MaxJitter) {
+		if err := objstore.UploadDir(ctx, logger, bkt, src, dst); err != nil {
+			level.Info(logger).Log("msg", "upload of chunks to bucket failed; trying again", "src", src, "dst", dst, "attempt", attempt, "err", err)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		err = cleanUp(logger, bkt, id, errors.Wrap(err, "upload chunks"))
 	}
 
-	if err := objstore.UploadFile(ctx, logger, bkt, path.Join(bdir, IndexFilename), path.Join(id.String(), IndexFilename)); err != nil {
-		return cleanUp(logger, bkt, id, errors.Wrap(err, "upload index"))
+	src = path.Join(bdir, IndexFilename)
+	dst = path.Join(id.String(), IndexFilename)
+	for attempt := range newRetryTimer(retryCtx, MaxRetries, DefaultRetryUnit, DefaultRetryCap, MaxJitter) {
+		if err := objstore.UploadFile(ctx, logger, bkt, src, dst); err != nil {
+			level.Info(logger).Log("msg", "upload of index to bucket failed; trying again", "src", src, "dst", dst, "attempt", attempt, "err", err)
+			continue
+		}
+		break
+	}
+	if err != nil {
+		err = cleanUp(logger, bkt, id, errors.Wrap(err, "upload index"))
 	}
 
-	// Meta.json always need to be uploaded as a last item. This will allow to assume block directories without meta file to be pending uploads.
-	if err := bkt.Upload(ctx, path.Join(id.String(), MetaFilename), strings.NewReader(metaEncoded.String())); err != nil {
+	name = path.Join(id.String(), MetaFilename)
+	for attempt := range newRetryTimer(retryCtx, MaxRetries, DefaultRetryUnit, DefaultRetryCap, MaxJitter) {
+		// Meta.json always need to be uploaded as a last item. This will allow to assume block directories without meta file to be pending uploads.
+		if err := bkt.Upload(ctx, name, strings.NewReader(metaEncoded.String())); err != nil {
+			level.Info(logger).Log("msg", "upload of meta file to bucket failed; trying again", "name", name, "attempt", attempt, "err", err)
+			continue
+		}
+		break
+	}
+	if err != nil {
 		// Don't call cleanUp here. Despite getting error, meta.json may have been uploaded in certain cases,
 		// and even though cleanUp will not see it yet, meta.json may appear in the bucket later.
 		// (Eg. S3 is known to behave this way when it returns 503 "SlowDown" error).
 		// If meta.json is not uploaded, this will produce partial blocks, but such blocks will be cleaned later.
-		return errors.Wrap(err, "upload meta file")
+		err = errors.Wrap(err, "upload meta file")
+	}
+
+	if e := retryCtx.Err(); e != nil {
+		err = errors.Wrap(err, e.Error())
+	}
+
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -343,4 +404,50 @@ func MarkForNoCompact(ctx context.Context, logger log.Logger, bkt objstore.Bucke
 	markedForNoCompact.Inc()
 	level.Info(logger).Log("msg", "block has been marked for no compaction", "block", id)
 	return nil
+}
+
+// newRetryTimer is copied from https://github.com/minio/minio-go/blob/v7.0.2/retry.go#L45 and slightly adjusted.
+func newRetryTimer(ctx context.Context, maxRetry int, unit time.Duration, cap time.Duration, jitter float64) <-chan int {
+	attemptCh := make(chan int)
+
+	// computes the exponential backoff duration according to
+	// https://www.awsarchitectureblog.com/2015/03/backoff.html
+	exponentialBackoffWait := func(attempt int) time.Duration {
+		// normalize jitter to the range [0, 1.0]
+		if jitter < NoJitter {
+			jitter = NoJitter
+		}
+		if jitter > MaxJitter {
+			jitter = MaxJitter
+		}
+
+		//sleep = random_between(0, min(cap, base * 2 ** attempt)).
+		sleep := unit * time.Duration(1<<uint(attempt))
+		if sleep > cap {
+			sleep = cap
+		}
+		if jitter != NoJitter {
+			rand.Seed(time.Now().UnixNano())
+			sleep -= time.Duration(rand.Float64() * float64(sleep) * jitter)
+		}
+		return sleep
+	}
+
+	go func() {
+		defer close(attemptCh)
+		for i := 0; i < maxRetry; i++ {
+			select {
+			case attemptCh <- i + 1:
+			case <-ctx.Done():
+				return
+			}
+
+			select {
+			case <-time.After(exponentialBackoffWait(i)):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return attemptCh
 }
