@@ -202,8 +202,8 @@ func (b *backoffBucket) Delete(ctx context.Context, name string) error {
 	return err
 }
 
-func (b *backoffBucket) Iter(ctx context.Context, dir string, f func(string) error) error {
-	return b.Bucket.Iter(ctx, dir, f)
+func (b *backoffBucket) Iter(ctx context.Context, dir string, f func(string) error, options ...IterOption) error {
+	return b.Bucket.Iter(ctx, dir, f, options...)
 }
 
 func (b *backoffBucket) Attributes(ctx context.Context, name string) (ObjectAttributes, error) {
