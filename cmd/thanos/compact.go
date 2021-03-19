@@ -205,7 +205,7 @@ func runCompact(
 	ignoreDeletionMarkFilter := block.NewIgnoreDeletionMarkFilter(logger, bkt, deleteDelay/2, conf.blockMetaFetchConcurrency)
 	duplicateBlocksFilter := block.NewDeduplicateFilter()
 
-	baseMetaFetcher, err := block.NewBaseFetcher(logger, conf.blockMetaFetchConcurrency, bkt, "", extprom.WrapRegistererWithPrefix("thanos_", reg))
+	baseMetaFetcher, err := block.NewBaseFetcher(logger, conf.blockMetaFetchConcurrency, bkt, conf.metaCacheDir, extprom.WrapRegistererWithPrefix("thanos_", reg))
 	if err != nil {
 		return errors.Wrap(err, "create meta fetcher")
 	}
@@ -546,6 +546,7 @@ type compactConfig struct {
 	maxCompactionLevel                             int
 	http                                           httpConfig
 	dataDir                                        string
+	metaCacheDir                                   string
 	objStore                                       extflag.PathOrContent
 	consistencyDelay                               time.Duration
 	retentionRaw, retentionFiveMin, retentionOneHr model.Duration
@@ -610,6 +611,8 @@ func (cc *compactConfig) registerFlag(cmd extkingpin.FlagClause) {
 
 	cmd.Flag("block-sync-concurrency", "Number of goroutines to use when syncing block metadata from object storage.").
 		Default("20").IntVar(&cc.blockSyncConcurrency)
+	cmd.Flag("block-meta-cache-dir", "Directory in which to cache block meta data.").
+		Default("").StringVar(&cc.metaCacheDir)
 	cmd.Flag("block-meta-fetch-concurrency", "Number of goroutines to use when fetching block metadata from object storage.").
 		Default("32").IntVar(&cc.blockMetaFetchConcurrency)
 	cmd.Flag("block-viewer.global.sync-block-interval", "Repeat interval for syncing the blocks between local and remote view for /global Block Viewer UI.").
