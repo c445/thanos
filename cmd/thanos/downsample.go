@@ -104,7 +104,7 @@ func RunDownsample(
 			statusProber.Ready()
 
 			level.Info(logger).Log("msg", "start first pass of downsampling")
-			metas, _, err := metaFetcher.Fetch(ctx)
+			metas, _, _, err := metaFetcher.Fetch(ctx)
 			if err != nil {
 				return errors.Wrap(err, "sync before first pass of downsampling")
 			}
@@ -119,7 +119,7 @@ func RunDownsample(
 			}
 
 			level.Info(logger).Log("msg", "start second pass of downsampling")
-			metas, _, err = metaFetcher.Fetch(ctx)
+			metas, _, _, err = metaFetcher.Fetch(ctx)
 			if err != nil {
 				return errors.Wrap(err, "sync before second pass of downsampling")
 			}

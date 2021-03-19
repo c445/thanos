@@ -45,7 +45,7 @@ func (OverlappedBlocksIssue) Verify(ctx Context, idMatcher func(ulid.ULID) bool)
 }
 
 func fetchOverlaps(ctx context.Context, fetcher block.MetadataFetcher) (map[string]tsdb.Overlaps, error) {
-	metas, _, err := fetcher.Fetch(ctx)
+	metas, _, _, err := fetcher.Fetch(ctx)
 	if err != nil {
 		return nil, err
 	}

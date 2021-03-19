@@ -238,7 +238,7 @@ func TestMetaFetcher_Fetch(t *testing.T) {
 				tcase.do()
 
 				ulidToDelete = tcase.filterULID
-				metas, partial, err := fetcher.Fetch(ctx)
+				metas, partial, _, err := fetcher.Fetch(ctx)
 				if tcase.expectedMetaErr != nil {
 					testutil.NotOk(t, err)
 					testutil.Equals(t, tcase.expectedMetaErr.Error(), err.Error())

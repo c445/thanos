@@ -247,7 +247,7 @@ func registerBucketLs(app extkingpin.AppClause, objStoreConfig *extflag.PathOrCo
 			}
 		}
 
-		metas, _, err := fetcher.Fetch(ctx)
+		metas, _, _, err := fetcher.Fetch(ctx)
 		if err != nil {
 			return err
 		}
@@ -303,7 +303,7 @@ func registerBucketInspect(app extkingpin.AppClause, objStoreConfig *extflag.Pat
 		defer cancel()
 
 		// Getting Metas.
-		metas, _, err := fetcher.Fetch(ctx)
+		metas, _, _, err := fetcher.Fetch(ctx)
 		if err != nil {
 			return err
 		}
@@ -402,7 +402,7 @@ func registerBucketWeb(app extkingpin.AppClause, objStoreConfig *extflag.PathOrC
 					iterCtx, iterCancel := context.WithTimeout(ctx, *timeout)
 					defer iterCancel()
 
-					_, _, err := fetcher.Fetch(iterCtx)
+					_, _, _, err := fetcher.Fetch(iterCtx)
 					if err != nil {
 						return err
 					}

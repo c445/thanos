@@ -141,7 +141,7 @@ func NewFetcherMetrics(reg prometheus.Registerer, syncedExtraLabels, modifiedExt
 }
 
 type MetadataFetcher interface {
-	Fetch(ctx context.Context) (metas map[ulid.ULID]*metadata.Meta, partial map[ulid.ULID]error, err error)
+	Fetch(ctx context.Context) (metas map[ulid.ULID]*metadata.Meta, partial, zombies map[ulid.ULID]error, err error)
 	UpdateOnChange(func([]metadata.Meta, error))
 }
 
@@ -216,8 +216,9 @@ func (f *BaseFetcher) NewMetaFetcher(reg prometheus.Registerer, filters []Metada
 }
 
 var (
-	ErrorSyncMetaNotFound  = errors.New("meta.json not found")
-	ErrorSyncMetaCorrupted = errors.New("meta.json corrupted")
+	ErrorSyncMetaNotFound    = errors.New("meta.json not found")
+	ErrorSyncMetaCorrupted   = errors.New("meta.json corrupted")
+	ErrorSyncMetaZombieFound = errors.New("meta.json zombie found")
 )
 
 // loadMeta returns metadata from object storage or error.
@@ -264,7 +265,10 @@ func (f *BaseFetcher) loadMeta(ctx context.Context, id ulid.ULID) (*metadata.Met
 		return nil, errors.Wrapf(ErrorSyncMetaNotFound, "%v", err)
 	}
 	if err != nil {
-		return nil, errors.Wrapf(err, "get meta file: %v", metaFile)
+		// Meta.json file is in "zombie" state.
+		// Meaning, it was considered present by the above Exists call but does not really exist anymore
+		// (a Get call returns a ServiceUnavailable in this case).
+		return nil, errors.Wrapf(ErrorSyncMetaZombieFound, "%v", err)
 	}
 
 	defer runutil.CloseWithLogOnErr(f.logger, r, "close bkt meta get")
@@ -299,6 +303,7 @@ func (f *BaseFetcher) loadMeta(ctx context.Context, id ulid.ULID) (*metadata.Met
 type response struct {
 	metas   map[ulid.ULID]*metadata.Meta
 	partial map[ulid.ULID]error
+	zombies map[ulid.ULID]error
 	// If metaErr > 0 it means incomplete view, so some metas, failed to be loaded.
 	metaErrs errutil.MultiError
 
@@ -313,6 +318,7 @@ func (f *BaseFetcher) fetchMetadata(ctx context.Context) (interface{}, error) {
 		resp = response{
 			metas:   make(map[ulid.ULID]*metadata.Meta),
 			partial: make(map[ulid.ULID]error),
+			zombies: make(map[ulid.ULID]error),
 		}
 		eg  errgroup.Group
 		ch  = make(chan ulid.ULID, f.concurrency)
@@ -334,6 +340,17 @@ func (f *BaseFetcher) fetchMetadata(ctx context.Context) (interface{}, error) {
 				default:
 					mtx.Lock()
 					resp.metaErrs.Add(err)
+					mtx.Unlock()
+					continue
+				case ErrorSyncMetaZombieFound:
+					// "Zombies" are meta.json files that are considered alive even though they are gone.
+					// We cannot simply add it to the partials (e.g. in case ErrorSyncMetaNotFound) because those will
+					// only be deleted later if they are older than a certain age. Zombies on the other hand should be
+					// deleted in any case, so we treat them separately.
+					// Furthermore, we don't want to propagate this error upwards because this would make the whole
+					// compaction loop fail.
+					mtx.Lock()
+					resp.zombies[id] = err
 					mtx.Unlock()
 					continue
 				case ErrorSyncMetaNotFound:
@@ -420,7 +437,7 @@ func (f *BaseFetcher) fetchMetadata(ctx context.Context) (interface{}, error) {
 	return resp, nil
 }
 
-func (f *BaseFetcher) fetch(ctx context.Context, metrics *FetcherMetrics, filters []MetadataFilter, modifiers []MetadataModifier) (_ map[ulid.ULID]*metadata.Meta, _ map[ulid.ULID]error, err error) {
+func (f *BaseFetcher) fetch(ctx context.Context, metrics *FetcherMetrics, filters []MetadataFilter, modifiers []MetadataModifier) (_ map[ulid.ULID]*metadata.Meta, _, _ map[ulid.ULID]error, err error) {
 	start := time.Now()
 	defer func() {
 		metrics.SyncDuration.Observe(time.Since(start).Seconds())
@@ -438,7 +455,7 @@ func (f *BaseFetcher) fetch(ctx context.Context, metrics *FetcherMetrics, filter
 		return f.fetchMetadata(ctx)
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resp := v.(response)
 
@@ -455,14 +472,14 @@ func (f *BaseFetcher) fetch(ctx context.Context, metrics *FetcherMetrics, filter
 	for _, filter := range filters {
 		// NOTE: filter can update synced metric accordingly to the reason of the exclude.
 		if err := filter.Filter(ctx, metas, metrics.Synced); err != nil {
-			return nil, nil, errors.Wrap(err, "filter metas")
+			return nil, nil, nil, errors.Wrap(err, "filter metas")
 		}
 	}
 
 	for _, m := range modifiers {
 		// NOTE: modifier can update modified metric accordingly to the reason of the modification.
 		if err := m.Modify(ctx, metas, metrics.Modified); err != nil {
-			return nil, nil, errors.Wrap(err, "modify metas")
+			return nil, nil, nil, errors.Wrap(err, "modify metas")
 		}
 	}
 
@@ -470,11 +487,11 @@ func (f *BaseFetcher) fetch(ctx context.Context, metrics *FetcherMetrics, filter
 	metrics.Submit()
 
 	if len(resp.metaErrs) > 0 {
-		return metas, resp.partial, errors.Wrap(resp.metaErrs.Err(), "incomplete view")
+		return metas, resp.partial, resp.zombies, errors.Wrap(resp.metaErrs.Err(), "incomplete view")
 	}
 
 	level.Info(f.logger).Log("msg", "successfully synchronized block metadata", "duration", time.Since(start).String(), "cached", len(f.cached), "returned", len(metas), "partial", len(resp.partial))
-	return metas, resp.partial, nil
+	return metas, resp.partial, resp.zombies, nil
 }
 
 type MetaFetcher struct {
@@ -493,8 +510,8 @@ type MetaFetcher struct {
 // It's caller responsibility to not change the returned metadata files. Maps can be modified.
 //
 // Returned error indicates a failure in fetching metadata. Returned meta can be assumed as correct, with some blocks missing.
-func (f *MetaFetcher) Fetch(ctx context.Context) (metas map[ulid.ULID]*metadata.Meta, partial map[ulid.ULID]error, err error) {
-	metas, partial, err = f.wrapped.fetch(ctx, f.metrics, f.filters, f.modifiers)
+func (f *MetaFetcher) Fetch(ctx context.Context) (metas map[ulid.ULID]*metadata.Meta, partial, zombies map[ulid.ULID]error, err error) {
+	metas, partial, zombies, err = f.wrapped.fetch(ctx, f.metrics, f.filters, f.modifiers)
 	if f.listener != nil {
 		blocks := make([]metadata.Meta, 0, len(metas))
 		for _, meta := range metas {
@@ -502,7 +519,7 @@ func (f *MetaFetcher) Fetch(ctx context.Context) (metas map[ulid.ULID]*metadata.
 		}
 		f.listener(blocks, err)
 	}
-	return metas, partial, err
+	return metas, partial, zombies, err
 }
 
 // UpdateOnChange allows to add listener that will be update on every change.

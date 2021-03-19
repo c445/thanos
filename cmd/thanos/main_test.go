@@ -56,7 +56,7 @@ func TestCleanupDownsampleCacheFolder(t *testing.T) {
 	metaFetcher, err := block.NewMetaFetcher(nil, block.FetcherConcurrency, bkt, "", nil, nil, nil)
 	testutil.Ok(t, err)
 
-	metas, _, err := metaFetcher.Fetch(ctx)
+	metas, _, _, err := metaFetcher.Fetch(ctx)
 	testutil.Ok(t, err)
 	testutil.Ok(t, downsampleBucket(ctx, logger, metrics, bkt, metas, dir, metadata.NoneFunc))
 	testutil.Equals(t, 1.0, promtest.ToFloat64(metrics.downsamples.WithLabelValues(compact.DefaultGroupKey(meta.Thanos))))

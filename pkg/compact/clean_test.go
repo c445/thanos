@@ -61,7 +61,7 @@ func TestBestEffortCleanAbortedPartialUploads(t *testing.T) {
 	deleteAttempts := promauto.With(nil).NewCounter(prometheus.CounterOpts{})
 	blockCleanups := promauto.With(nil).NewCounter(prometheus.CounterOpts{})
 	blockCleanupFailures := promauto.With(nil).NewCounter(prometheus.CounterOpts{})
-	_, partial, err := metaFetcher.Fetch(ctx)
+	_, partial, _, err := metaFetcher.Fetch(ctx)
 	testutil.Ok(t, err)
 
 	BestEffortCleanAbortedPartialUploads(ctx, logger, partial, bkt, deleteAttempts, blockCleanups, blockCleanupFailures)

@@ -31,7 +31,7 @@ func (IndexKnownIssues) IssueID() string { return "index_known_issues" }
 func (IndexKnownIssues) VerifyRepair(ctx Context, idMatcher func(ulid.ULID) bool, repair bool) error {
 	level.Info(ctx.Logger).Log("msg", "started verifying issue", "with-repair", repair)
 
-	metas, _, err := ctx.Fetcher.Fetch(ctx)
+	metas, _, _, err := ctx.Fetcher.Fetch(ctx)
 	if err != nil {
 		return err
 	}

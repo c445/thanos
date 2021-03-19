@@ -514,7 +514,7 @@ func runCompact(
 		}
 		g.Add(func() error {
 			iterCtx, iterCancel := context.WithTimeout(ctx, blockSyncInterval)
-			_, _, _ = f.Fetch(iterCtx)
+			_, _, _, _ = f.Fetch(iterCtx)
 			iterCancel()
 
 			// For /global state make sure to fetch periodically.
@@ -523,7 +523,7 @@ func runCompact(
 					iterCtx, iterCancel := context.WithTimeout(ctx, blockSyncInterval)
 					defer iterCancel()
 
-					_, _, err := f.Fetch(iterCtx)
+					_, _, _, err := f.Fetch(iterCtx)
 					if err != nil {
 						return err
 					}

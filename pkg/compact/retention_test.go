@@ -249,7 +249,7 @@ func TestApplyRetentionPolicyByResolution(t *testing.T) {
 
 			blocksMarkedForDeletion := promauto.With(nil).NewCounter(prometheus.CounterOpts{})
 
-			metas, _, err := metaFetcher.Fetch(ctx)
+			metas, _, _, err := metaFetcher.Fetch(ctx)
 			testutil.Ok(t, err)
 
 			if err := compact.ApplyRetentionPolicyByResolution(ctx, logger, bkt, metas, tt.retentionByResolution, blocksMarkedForDeletion); (err != nil) != tt.wantErr {

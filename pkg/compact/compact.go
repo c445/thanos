@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -127,12 +128,41 @@ func (s *Syncer) SyncMetas(ctx context.Context) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	metas, partial, err := s.fetcher.Fetch(ctx)
+	metas, partial, zombies, err := s.fetcher.Fetch(ctx)
+	// Zombie meta.json files indicate a out-of-sync problem between the actual meta data store of the S3 provider and
+	// the actual objects. It's not "critical" and a simple deletion should get rid of those. Because of those we don't
+	// want to retry the whole compaction loop.
+	for id, zerr := range zombies {
+		if err := s.deleteMeta(ctx, id); err != nil {
+			return retry(errors.Wrapf(zerr, "%v", err))
+		}
+	}
 	if err != nil {
 		return retry(err)
 	}
 	s.blocks = metas
 	s.partial = partial
+	return nil
+}
+
+// deleteMeta is a copy of the first half of the block.Delete function, as we are only interested in cleaning up the
+// corresponding meta.json file.
+func (s *Syncer) deleteMeta(ctx context.Context, id ulid.ULID) error {
+	metaFile := path.Join(id.String(), block.MetaFilename)
+
+	// Delete block meta file.
+	ok, err := s.bkt.Exists(ctx, metaFile)
+	if err != nil {
+		return errors.Wrapf(err, "stat %s", metaFile)
+	}
+
+	if ok {
+		if err := s.bkt.Delete(ctx, metaFile); err != nil {
+			return errors.Wrapf(err, "delete %s", metaFile)
+		}
+		level.Debug(s.logger).Log("msg", "deleted file", "file", metaFile, "bucket", s.bkt.Name())
+	}
+
 	return nil
 }
 
